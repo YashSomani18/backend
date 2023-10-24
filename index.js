@@ -2,26 +2,30 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
+const moment = require("moment-timezone"); // Import moment-timezone
+
+// App config
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// DB config
 const username = process.env.MONGODB_USERNAME;
 const password = process.env.MONGODB_PASSWORD;
 const connectionUri = `mongodb+srv://${username}:${password}@reminderwp.r1c8vd6.mongodb.net/?retryWrites=true&w=majority`;
 
-// App config
-const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(cors());
-
-// DB config
 mongoose
   .connect(connectionUri, {
     useNewUrlParser: true,
     useUnifiedTopology: true,
+    serverSelectionTimeoutMS: 300000,
   })
   .then(() => {
     console.log("Connected to MongoDB");
-    app.listen(process.env.PORT || 9000, () => {
-      console.log("Backend working successfully");
+    const port = process.env.PORT || 9000;
+    app.listen(port, () => {
+      console.log(`Backend listening on port ${port}`);
     });
   })
   .catch((error) => {
@@ -30,14 +34,14 @@ mongoose
 
 // Schema
 const reminderSchema = new mongoose.Schema({
-  phoneNumber: String, // Added phoneNumber field
+  phoneNumber: String,
   reminderMsg: String,
-  remindAt: String,
+  remindAt: Date,
   isReminded: Boolean,
 });
-const Reminder = mongoose.model("reminder", reminderSchema);
+const Reminder = mongoose.model("Reminder", reminderSchema);
 
-const sendReminder = (reminder) => {
+const sendReminder = async (reminder) => {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken = process.env.TWILIO_AUTH_TOKEN;
 
@@ -49,34 +53,34 @@ const sendReminder = (reminder) => {
 
   const client = require("twilio")(accountSid, authToken);
 
-  client.messages
-    .create({
+  try {
+    const message = await client.messages.create({
       body: reminder.reminderMsg,
       from: "whatsapp:+14155238886",
       to: `whatsapp:+91${reminder.phoneNumber}`,
-    })
-    .then((message) => console.log(message.sid))
-    .catch((err) => console.log(err));
+    });
+    console.log(message.sid);
+  } catch (error) {
+    console.log("Error sending reminder:", error);
+  }
 };
 
 // Schedule reminders check
-setInterval(() => {
+setInterval(async () => {
   const now = new Date();
-  Reminder.find({ isReminded: false, remindAt: { $lt: now } })
-    .then((reminderList) => {
-      reminderList.forEach((reminder) => {
-        Reminder.findByIdAndUpdate(reminder._id, { isReminded: true })
-          .then((remindObj) => {
-            sendReminder(reminder);
-          })
-          .catch((err) => {
-            console.log(err);
-          });
-      });
-    })
-    .catch((err) => {
-      console.log(err);
+  try {
+    const reminderList = await Reminder.find({
+      isReminded: false,
+      remindAt: { $lte: now },
     });
+    for (const reminder of reminderList) {
+      sendReminder(reminder);
+      // Delete the reminder after it's sent
+      await Reminder.findByIdAndDelete(reminder._id);
+    }
+  } catch (error) {
+    console.log("Error updating or sending reminders:", error);
+  }
 }, 1000);
 
 // API Routes
@@ -97,13 +101,13 @@ app.post("/addReminder", async (req, res) => {
     const reminder = new Reminder({
       phoneNumber,
       reminderMsg,
-      remindAt,
+      remindAt: moment.tz(remindAt, "Asia/Kolkata").toDate(), // Convert remindAt to Date object using moment.js with timezone
       isReminded: false,
     });
 
     await reminder.save();
-    const reminderList = await Reminder.find({});
-    res.send(reminderList);
+    const updatedReminderList = await Reminder.find({});
+    res.send(updatedReminderList);
   } catch (error) {
     console.log(error);
     res.status(500).send("Internal server error");
@@ -115,8 +119,8 @@ app.post("/deleteReminder", async (req, res) => {
 
   try {
     await Reminder.deleteOne({ _id: id });
-    const reminderList = await Reminder.find({});
-    res.send(reminderList);
+    const updatedReminderList = await Reminder.find({});
+    res.send(updatedReminderList);
   } catch (error) {
     console.log(error);
     res.status(500).send("Internal server error");
